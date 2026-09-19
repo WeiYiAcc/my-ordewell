@@ -67,3 +67,15 @@ node bench/live/drive-conversation.mjs
   it permits without an ADR.
 - Sessions persist to `.ordewell/` and are gitignored. Nothing there is a
   fixture; do not commit it.
+
+## Project memory index (this fork)
+
+This fork layers a memory layout on top of the upstream docs:
+
+- **Cross-repo / machine facts** — skill `machine-memory`, invoked as `/machine-memory`.
+  Source: [`skills/machine-memory/SKILL.md`](skills/machine-memory/SKILL.md). Install globally
+  with `ln -sfn "$PWD/skills/machine-memory" ~/.ordewell/skills/machine-memory`.
+- **Planner preamble** — [`ORDEWELL.md`](ORDEWELL.md). Hard-capped at 8000 characters by
+  `ContextCollector` and truncated silently, so it holds hard rules and pointers only.
+- **Why this layout** — [`docs/agent-memory.md`](docs/agent-memory.md): every context channel,
+  its cap, and what each usage mode (CLI / TUI / API / VS Code) can reach.
