@@ -64,6 +64,13 @@ chezmoi 于 2026-09-12 彻底移除，**不要复活**（历史在 `WeiYiAcc/my-
 - **坑**：daemon 的 cwd 若已被删除（例如从 `/tmp` 临时目录启动后又删掉），所有 runner 任务都会失败，
   日志里是 `getcwd: cannot access parent directories` / `mise WARN Current directory does not exist`。
   修法：从仍然存在的目录重启 daemon（`ordewell stop --server`，再在有效目录里跑任意 ordewell 命令）。
+- **坑：claude-code 在"没见过的目录"会卡在信任对话框**。Claude Code 首次进入某目录会弹
+  `Security guide / Yes, I trust this folder / No, exit`，光标默认停在 `No, exit`；
+  `--dangerously-skip-permissions` **不覆盖**它（该对话框只在非交互 `-p` 下跳过，而 ordewell 在 tmux 里开交互 pane）。
+  症状：runner 任务永远 `in_progress`，工作区无产物。修法：启动前预登记信任——
+  在 `~/.claude.json` 的 `projects["<绝对路径>"]` 写 `hasTrustDialogAccepted: true`
+  （新 worktree 还要 `hasClaudeMdExternalIncludesApproved` / `hasClaudeMdExternalIncludesWarningShown`）；
+  firstmate 的 `bin/fm-claude-trust.sh` 就是干这个的。
 - **跑本仓测试的坑**：如果 shell 里 export 了 `GEMINI_API_KEY` / `GEMINI_BASE_URL`，
   `packages/web` 和 `packages/vscode` 各会挂一个用例（provider 探测解析成 google）。
   用 `env -u GEMINI_API_KEY -u GEMINI_BASE_URL` 跑就通过。
