@@ -59,6 +59,26 @@ export interface ApiDiscoveryConfig {
   parser: PluginParser;
 }
 
+/**
+ * Model ids the runner's own CLI has registered as usable, read from a settings
+ * file it owns. Claude Code is the case this exists for: pointed at an LLM
+ * gateway (`ANTHROPIC_BASE_URL` plus gateway model discovery), the models it can
+ * actually run belong to the gateway, and neither the Anthropic Models API nor
+ * `--help` can name them. Its `modelPicker` rows are what is left — the exact
+ * strings its own picker offers, including the `behavesAs` mapping a third-party
+ * id needs before `--model` accepts it.
+ */
+export interface SettingsModelsConfig {
+  /** Settings file to read, with `~` expansion (e.g. `~/.claude/settings.json`). */
+  path: string;
+  /** Dotted path to the array of model rows inside it (e.g. `modelPicker.options`). */
+  jsonPath: string;
+  /** Row field holding the id the CLI accepts (e.g. `model`). */
+  idField: string;
+  /** Optional row field holding the display label (e.g. `label`). */
+  labelField?: string;
+}
+
 export interface PluginModelDiscovery {
   method: 'command' | 'hardcoded';
   command?: string;
@@ -97,6 +117,13 @@ export interface PluginModelDiscovery {
    * fails, discovery falls through to `discoveryCommands` + `canonicalAliases`.
    */
   apiDiscovery?: ApiDiscoveryConfig;
+  /**
+   * Ids the runner's own settings file registers as usable, merged into
+   * whatever the other sources found — appended only when absent, so a live
+   * catalog always wins a conflict. Covers the models no catalog endpoint can
+   * name (see {@link SettingsModelsConfig}).
+   */
+  settingsModels?: SettingsModelsConfig;
   preferredPatterns?: { id: string; label: string }[];
   variants?: { id: string; label: string }[];
   discoveryCommands?: DiscoveryCommand[];

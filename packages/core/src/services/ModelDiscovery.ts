@@ -5,7 +5,7 @@ import * as fsSync from 'fs';
 import * as osMod from 'os';
 import { DiscoveredModel } from '../models/Task';
 import type { RunnerRegistry } from '../plugins/RunnerRegistry';
-import type { RunnerPluginManifest, DiscoveryCommand, ApiDiscoveryConfig, ApiAuthMethod } from '../plugins/types';
+import type { RunnerPluginManifest, DiscoveryCommand, ApiDiscoveryConfig, ApiAuthMethod, SettingsModelsConfig } from '../plugins/types';
 import { augmentedPath, withPath } from '../utils/shellPath';
 import { globalDataDir } from '../utils/globalDataDir';
 import { planDirectLaunch } from '../utils/launch';
@@ -502,6 +502,70 @@ function mergeCanonicalAliases(discovered: DiscoveredModel[], manifest: RunnerPl
   return gaps.length > 0 ? [...discovered, ...gaps] : discovered;
 }
 
+/**
+ * Read the model rows a runner's *own* settings file registers as usable, from
+ * the dotted path its manifest names (Claude Code's `modelPicker.options`).
+ * The row shape is the file's, not Ordewell's: `idField` holds the string the
+ * CLI accepts on its command line, `labelField` the display label.
+ *
+ * An unreadable file, unparseable JSON or a missing list all yield `[]`: this
+ * source is additive, so it must never be the reason discovery reports nothing.
+ */
+export function parseSettingsModels(content: string, config: SettingsModelsConfig): DiscoveredModel[] {
+  try {
+    const rows = config.jsonPath
+      .split('.')
+      .reduce<unknown>(
+        (node, key) => (node && typeof node === 'object' ? (node as Record<string, unknown>)[key] : undefined),
+        JSON.parse(content),
+      );
+    if (!Array.isArray(rows)) return [];
+
+    const seen = new Set<string>();
+    const models: DiscoveredModel[] = [];
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue;
+      const id = (row as Record<string, unknown>)[config.idField];
+      if (typeof id !== 'string' || id.length === 0 || seen.has(id)) continue;
+      seen.add(id);
+      const label = config.labelField ? (row as Record<string, unknown>)[config.labelField] : undefined;
+      models.push({
+        modelId: id,
+        modelLabel: typeof label === 'string' && label.length > 0 ? label : id,
+        // Same reading as every other source: a prefix in the id is the
+        // provider, which is what model pickers group on.
+        runnerProvider: id.includes('/') ? id.split('/')[0] : undefined,
+        variants: [],
+      });
+    }
+    return models;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Merge the models a runner's own settings register into a discovery result.
+ * Appended, never substituted: when both sources name an id, the live catalog
+ * discovered it (label and variants included) and the settings row adds
+ * nothing, while the ids no catalog can name — a gateway's, which only the
+ * runner's own picker knows — exist nowhere else.
+ */
+export function mergeSettingsModels(
+  discovered: DiscoveredModel[],
+  manifest: RunnerPluginManifest,
+  readFile: (path: string) => string | null,
+): DiscoveredModel[] {
+  const config = manifest.modelDiscovery.settingsModels;
+  if (!config) return discovered;
+  const content = readFile(config.path);
+  if (!content) return discovered;
+
+  const seen = new Set(discovered.map((m) => m.modelId));
+  const missing = parseSettingsModels(content, config).filter((m) => !seen.has(m.modelId));
+  return missing.length > 0 ? [...discovered, ...missing] : discovered;
+}
+
 function buildFallbackModels(manifest: RunnerPluginManifest): DiscoveredModel[] {
   // Prefer canonicalAliases (stable CLI contracts, e.g. Claude's opus/sonnet/
   // haiku) when declared; fall back to the generic fallbackModels list for
@@ -879,6 +943,17 @@ export class ModelDiscovery {
     let cacheable = true;
     const discovery = manifest.modelDiscovery;
 
+    // Every exit that is not the app-server one lands here: merge the models
+    // the runner's own settings register, let the manifest's static list fill
+    // in whatever is still without variants, and cache a result a real source
+    // produced. One seam for both the API path and the `--help` path, so a
+    // gateway model cannot appear on one and not the other.
+    const finish = (list: DiscoveredModel[]): DiscoveredModel[] => {
+      const merged = applyVariants(mergeSettingsModels(list, manifest, this.readFileImpl), manifest);
+      if (cacheable && merged.length > 0) this.cache.set(runner, merged);
+      return merged;
+    };
+
     // 0. App-server JSON-RPC discovery (Codex). Live catalog first, the
     //    runner's own cache file second; falls through on total failure.
     if (discovery.appServer) {
@@ -899,9 +974,7 @@ export class ModelDiscovery {
     if (discovery.apiDiscovery) {
       const apiModels = await discoverFromApi(discovery.apiDiscovery, this.fetchImpl);
       if (apiModels && apiModels.length > 0) {
-        models = applyVariants(mergeCanonicalAliases(apiModels, manifest), manifest);
-        if (cacheable && models.length > 0) this.cache.set(runner, models);
-        return models;
+        return finish(mergeCanonicalAliases(apiModels, manifest));
       }
     }
 
@@ -917,8 +990,7 @@ export class ModelDiscovery {
       models = buildFallbackModels(manifest);
     }
 
-    if (cacheable && models.length > 0) this.cache.set(runner, models);
-    return models;
+    return finish(models);
   }
 
   clear(): void {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { discoverGeminiModels, ModelDiscovery, type ExecImpl } from '../ModelDiscovery';
+import { discoverGeminiModels, parseSettingsModels, ModelDiscovery, type ExecImpl } from '../ModelDiscovery';
 import type { RunnerRegistry } from '../../plugins/RunnerRegistry';
 import { CLAUDE_CODE_MANIFEST } from '../../plugins/builtin/claude-code.manifest';
 import { OPENCODE_MANIFEST } from '../../plugins/builtin/opencode.manifest';
@@ -13,6 +13,26 @@ function registryWith(...manifests: Array<{ name: string }>): RunnerRegistry {
 // apiDiscovery path is skipped (returns null) and the test exercises the
 // `claude --help` parsing path, not a live or mock API call.
 const failingFetch = vi.fn(async () => { throw new Error('no fetch in command tests'); });
+
+// A file seam that reads nothing. Discovery also merges the model rows Claude
+// Code registered in `~/.claude/settings.json`, so every Claude Code case here
+// pins that reader: a unit test must not depend on the machine it runs on.
+const noConfigFiles = () => null;
+
+/**
+ * Claude Code discovery with the two seams every case below needs fixed: the
+ * fetch it expects (`failingFetch` unless the case is about the Anthropic API)
+ * and the settings-file reader.
+ */
+function claudeDiscovery(exec: ExecImpl, fetchImpl?: typeof fetch, manifest?: { name: string }): ModelDiscovery {
+  return new ModelDiscovery(
+    registryWith(manifest ?? CLAUDE_CODE_MANIFEST),
+    exec,
+    fetchImpl ?? failingFetch,
+    undefined,
+    noConfigFiles,
+  );
+}
 
 // Modern `claude --help`: the --model option is described in prose with example
 // aliases, and there is NO enumerated "Available values:" list.
@@ -65,7 +85,7 @@ describe('ModelDiscovery — Claude Code', () => {
       if (command.includes('--help')) return { stdout: MODERN_CLAUDE_HELP };
       throw new Error('unexpected command: ' + command);
     });
-    const discovery = new ModelDiscovery(registryWith(CLAUDE_CODE_MANIFEST), exec, failingFetch);
+    const discovery = claudeDiscovery(exec);
 
     const models = await discovery.discover('claude-code');
     const ids = models.map((m) => m.modelId);
@@ -84,7 +104,7 @@ describe('ModelDiscovery — Claude Code', () => {
 
   it('returns the canonical alias fallback when the CLI is unavailable', async () => {
     const exec: ExecImpl = vi.fn(async () => { throw new Error('ENOENT'); });
-    const discovery = new ModelDiscovery(registryWith(CLAUDE_CODE_MANIFEST), exec, failingFetch);
+    const discovery = claudeDiscovery(exec);
 
     const models = await discovery.discover('claude-code');
     expect(models.map((m) => m.modelId)).toEqual(['opus', 'sonnet', 'haiku', 'fable']);
@@ -103,7 +123,7 @@ describe('ModelDiscovery — Claude Code', () => {
       if (command.includes('--help')) return { stdout: MODERN_CLAUDE_HELP };
       throw new Error('unexpected');
     });
-    const discovery = new ModelDiscovery(registryWith(CLAUDE_CODE_MANIFEST), exec, failingFetch);
+    const discovery = claudeDiscovery(exec);
 
     const first = await discovery.discover('claude-code');
     expect(first.map((m) => m.modelId)).toEqual(['opus', 'sonnet', 'haiku', 'fable']);
@@ -121,7 +141,7 @@ describe('ModelDiscovery — Claude Code', () => {
       if (command.includes('--help')) return { stdout: helpWithList };
       throw new Error('no');
     });
-    const discovery = new ModelDiscovery(registryWith(CLAUDE_CODE_MANIFEST), exec, failingFetch);
+    const discovery = claudeDiscovery(exec);
 
     const ids = (await discovery.discover('claude-code')).map((m) => m.modelId);
 
@@ -142,7 +162,7 @@ describe('ModelDiscovery — Claude Code', () => {
       if (command.includes('--help')) return { stdout: helpMissingHaiku };
       throw new Error('unexpected');
     });
-    const discovery = new ModelDiscovery(registryWith(CLAUDE_CODE_MANIFEST), exec, failingFetch);
+    const discovery = claudeDiscovery(exec);
 
     const ids = (await discovery.discover('claude-code')).map((m) => m.modelId);
 
@@ -164,7 +184,7 @@ describe('ModelDiscovery — Claude Code', () => {
       if (command.includes('--help')) return { stdout: helpWithHaiku };
       throw new Error('unexpected');
     });
-    const discovery = new ModelDiscovery(registryWith(CLAUDE_CODE_MANIFEST), exec, failingFetch);
+    const discovery = claudeDiscovery(exec);
 
     const models = await discovery.discover('claude-code');
     const haikuEntries = models.filter((m) => m.modelId === 'haiku');
@@ -212,11 +232,7 @@ describe('ModelDiscovery — Claude Code API (Anthropic Models API)', () => {
   const noExec: ExecImpl = vi.fn(async () => { throw new Error('exec should not be called'); });
 
   it('derives short aliases from the Anthropic Models API, deduped by family', async () => {
-    const discovery = new ModelDiscovery(
-      registryWith(CLAUDE_CODE_MANIFEST),
-      noExec,
-      apiFetch(ANTHROPIC_API_RESPONSE),
-    );
+    const discovery = claudeDiscovery(noExec, apiFetch(ANTHROPIC_API_RESPONSE));
 
     const models = await discovery.discover('claude-code');
     const byId = new Map(models.map((m) => [m.modelId, m]));
@@ -235,11 +251,7 @@ describe('ModelDiscovery — Claude Code API (Anthropic Models API)', () => {
       if (command.includes('--help')) return { stdout: MODERN_CLAUDE_HELP };
       throw new Error('unexpected');
     });
-    const discovery = new ModelDiscovery(
-      registryWith(CLAUDE_CODE_MANIFEST),
-      exec,
-      apiFetch('{"type":"error","error":{"type":"authentication_error"}}', 401),
-    );
+    const discovery = claudeDiscovery(exec, apiFetch('{"type":"error","error":{"type":"authentication_error"}}', 401));
 
     const ids = (await discovery.discover('claude-code')).map((m) => m.modelId);
     expect(ids).toEqual(['fable', 'opus', 'sonnet', 'haiku']);
@@ -269,11 +281,7 @@ describe('ModelDiscovery — Claude Code API (Anthropic Models API)', () => {
       throw new Error('unexpected');
     });
     const fetchShouldNotBeCalled = vi.fn(async () => { throw new Error('fetch should not be called'); }) as unknown as typeof fetch;
-    const discovery = new ModelDiscovery(
-      registryWith(manifestNoAuth),
-      exec,
-      fetchShouldNotBeCalled,
-    );
+    const discovery = claudeDiscovery(exec, fetchShouldNotBeCalled, manifestNoAuth);
 
     const ids = (await discovery.discover('claude-code')).map((m) => m.modelId);
     expect(ids).toEqual(['fable', 'opus', 'sonnet', 'haiku']);
@@ -281,11 +289,7 @@ describe('ModelDiscovery — Claude Code API (Anthropic Models API)', () => {
   });
 
   it('does not call exec when the API succeeds', async () => {
-    const discovery = new ModelDiscovery(
-      registryWith(CLAUDE_CODE_MANIFEST),
-      noExec,
-      apiFetch(ANTHROPIC_API_RESPONSE),
-    );
+    const discovery = claudeDiscovery(noExec, apiFetch(ANTHROPIC_API_RESPONSE));
 
     await discovery.discover('claude-code');
 
@@ -298,11 +302,7 @@ describe('ModelDiscovery — Claude Code API (Anthropic Models API)', () => {
         { id: 'claude-haiku-4-5-20251001' },
       ],
     });
-    const discovery = new ModelDiscovery(
-      registryWith(CLAUDE_CODE_MANIFEST),
-      noExec,
-      apiFetch(response),
-    );
+    const discovery = claudeDiscovery(noExec, apiFetch(response));
 
     const models = await discovery.discover('claude-code');
     const haiku = models.find((m) => m.modelId === 'haiku');
@@ -336,11 +336,7 @@ describe('ModelDiscovery — Claude Code API (Anthropic Models API)', () => {
         },
       ],
     });
-    const discovery = new ModelDiscovery(
-      registryWith(CLAUDE_CODE_MANIFEST),
-      noExec,
-      apiFetch(response),
-    );
+    const discovery = claudeDiscovery(noExec, apiFetch(response));
 
     const models = await discovery.discover('claude-code');
     const sonnet = models.find((m) => m.modelId === 'sonnet')!;
@@ -390,11 +386,7 @@ describe('ModelDiscovery — Claude Code API (Anthropic Models API)', () => {
         },
       ],
     });
-    const discovery = new ModelDiscovery(
-      registryWith(CLAUDE_CODE_MANIFEST),
-      noExec,
-      apiFetch(response),
-    );
+    const discovery = claudeDiscovery(noExec, apiFetch(response));
 
     const models = await discovery.discover('claude-code');
     const opus = models.find((m) => m.modelId === 'opus')!;
@@ -431,7 +423,7 @@ describe('ModelDiscovery — Claude Code API (Anthropic Models API)', () => {
         },
       ],
     });
-    const discovery = new ModelDiscovery(registryWith(CLAUDE_CODE_MANIFEST), noExec, apiFetch(response));
+    const discovery = claudeDiscovery(noExec, apiFetch(response));
 
     const opus = (await discovery.discover('claude-code')).find((m) => m.modelId === 'opus')!;
     expect(opus.variants.map((v) => v.id)).toEqual(['adaptive', 'low', 'medium', 'high', 'xhigh', 'max']);
@@ -452,12 +444,126 @@ describe('ModelDiscovery — Claude Code API (Anthropic Models API)', () => {
         },
       ],
     });
-    const discovery = new ModelDiscovery(registryWith(CLAUDE_CODE_MANIFEST), noExec, apiFetch(response));
+    const discovery = claudeDiscovery(noExec, apiFetch(response));
 
     const haiku = (await discovery.discover('claude-code')).find((m) => m.modelId === 'haiku')!;
     // Empty here, so the manifest's static ladder fills in (applyVariants) —
     // the picker never goes blank, it just stops claiming per-model precision.
     expect(haiku.variants.map((v) => v.id)).toEqual(CLAUDE_CODE_MANIFEST.modelDiscovery.variants!.map((v) => v.id));
+  });
+});
+
+// The real shape of a Claude Code user settings file when the CLI is pointed
+// at an LLM gateway: the picker rows hold the ids the CLI accepts, `behavesAs`
+// being what maps a third-party id onto a model shape it understands. The bare
+// id the gateway itself reports (`default`) is NOT one of them — `--model`
+// rejects it — so the row's value is the id Ordewell must offer.
+const CLAUDE_SETTINGS_WITH_GATEWAY = JSON.stringify({
+  env: {
+    ANTHROPIC_BASE_URL: 'https://gproxy.example',
+    CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1',
+  },
+  model: 'gproxy/default',
+  modelPicker: {
+    options: [
+      { model: 'gproxy/default', label: 'gproxy default [gproxy]', behavesAs: 'claude-haiku-4-5' },
+      { model: 'gproxy/deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash [gproxy]' },
+      { label: 'a row with no model field' },
+      { model: 'gproxy/default', label: 'the same id twice' },
+      { model: '' , label: 'an empty id' },
+    ],
+  },
+});
+
+describe("ModelDiscovery — model rows from the runner's own settings", () => {
+  const helpExec: ExecImpl = vi.fn(async (command: string) => {
+    if (command.includes('--help')) return { stdout: MODERN_CLAUDE_HELP };
+    throw new Error('unexpected command: ' + command);
+  });
+
+  // Reads only the path the manifest declares, so a typo in the path is a
+  // failure rather than a silently empty merge.
+  const readingSettings = (content: string | null) =>
+    vi.fn((path: string) => (path === '~/.claude/settings.json' ? content : null));
+
+  const discoveryWithSettings = (content: string | null, exec: ExecImpl = helpExec) =>
+    new ModelDiscovery(registryWith(CLAUDE_CODE_MANIFEST), exec, failingFetch, undefined, readingSettings(content));
+
+  it('reads the ids and labels the runner registered, skipping malformed rows', () => {
+    const models = parseSettingsModels(
+      CLAUDE_SETTINGS_WITH_GATEWAY,
+      CLAUDE_CODE_MANIFEST.modelDiscovery.settingsModels!,
+    );
+
+    expect(models.map((m) => m.modelId)).toEqual(['gproxy/default', 'gproxy/deepseek-v4.1-flash']);
+    expect(models[0].modelLabel).toBe('gproxy default [gproxy]');
+    // The prefix in the id is the provider, as in every other source.
+    expect(models[0].runnerProvider).toBe('gproxy');
+  });
+
+  it('offers a gateway model the CLI text cannot name, with the static effort list', async () => {
+    const discovery = discoveryWithSettings(CLAUDE_SETTINGS_WITH_GATEWAY);
+
+    const models = await discovery.discover('claude-code');
+
+    // The --help aliases stay, the gateway rows are appended.
+    expect(models.map((m) => m.modelId)).toEqual([
+      'fable', 'opus', 'sonnet', 'haiku',
+      'gproxy/default', 'gproxy/deepseek-v4.1-flash',
+    ]);
+    const gateway = models.find((m) => m.modelId === 'gproxy/default')!;
+    expect(gateway.modelLabel).toBe('gproxy default [gproxy]');
+    expect(gateway.runnerId).toBe('claude-code');
+    // Variant-less like any --help row, so the manifest's static ladder fills in.
+    expect(gateway.variants.map((v) => v.id)).toEqual(['adaptive', 'low', 'medium', 'high', 'xhigh', 'max']);
+    // Cached like every other real discovery result: a settings write reads the
+    // cache, and it must not be the one place the gateway model is missing.
+    expect(discovery.getCached('claude-code')!.map((m) => m.modelId)).toContain('gproxy/default');
+  });
+
+  it('appends only what is missing — an id both sources know keeps the catalog entry', async () => {
+    const settings = JSON.stringify({
+      modelPicker: {
+        options: [
+          { model: 'opus', label: 'Opus (as the settings file words it)' },
+          { model: 'gproxy/default', label: 'gproxy default [gproxy]' },
+        ],
+      },
+    });
+    const discovery = discoveryWithSettings(settings);
+
+    const models = await discovery.discover('claude-code');
+
+    expect(models.filter((m) => m.modelId === 'opus')).toHaveLength(1);
+    expect(models.find((m) => m.modelId === 'opus')!.modelLabel).toBe('Opus');
+    expect(models.map((m) => m.modelId)).toContain('gproxy/default');
+  });
+
+  it('leaves the catalog untouched when the settings file is absent, unreadable or rowless', async () => {
+    const contents = [
+      null,
+      'not json at all',
+      JSON.stringify({ modelPicker: {} }),
+      JSON.stringify({ modelPicker: { options: 'not an array' } }),
+      JSON.stringify({ modelPicker: { options: [] } }),
+    ];
+
+    for (const content of contents) {
+      const discovery = discoveryWithSettings(content);
+      const ids = (await discovery.discover('claude-code')).map((m) => m.modelId);
+      expect(ids, `content=${String(content)}`).toEqual(['fable', 'opus', 'sonnet', 'haiku']);
+    }
+  });
+
+  it('is a no-op for a runner whose manifest declares no settings source', async () => {
+    // The reader must never be consulted for such a runner: opencode has no
+    // such file, and a stray read would be a machine dependency for every test.
+    const readFile = vi.fn(() => null);
+    const exec: ExecImpl = vi.fn(async () => ({ stdout: 'opencode/some-model' }));
+    const discovery = new ModelDiscovery(registryWith(OPENCODE_MANIFEST), exec, undefined, undefined, readFile);
+
+    expect((await discovery.discover('opencode')).map((m) => m.modelId)).toEqual(['opencode/some-model']);
+    expect(readFile).not.toHaveBeenCalled();
   });
 });
 
@@ -698,7 +804,7 @@ describe('ModelDiscovery — Claude Code variants', () => {
       if (command.includes('--help')) return { stdout: MODERN_CLAUDE_HELP };
       throw new Error('unexpected');
     });
-    const discovery = new ModelDiscovery(registryWith(CLAUDE_CODE_MANIFEST), exec, failingFetch);
+    const discovery = claudeDiscovery(exec);
 
     const models = await discovery.discover('claude-code');
     expect(models.length).toBeGreaterThan(0);

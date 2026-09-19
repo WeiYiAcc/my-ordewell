@@ -59,6 +59,10 @@ export const CLAUDE_CODE_MANIFEST: RunnerPluginManifest = {
     // 3. canonicalAliases — stable --model contracts (opus/sonnet/haiku/fable)
     //    merged into any successful result to fill gaps, and used as the full
     //    last-resort list when both API and CLI are unavailable.
+    //
+    // A model served through an LLM gateway is in none of them, so
+    // `settingsModels` below merges in the rows Claude Code's own picker
+    // registered.
     apiDiscovery: {
       url: 'https://api.anthropic.com/v1/models?limit=100',
       headers: { 'anthropic-version': '2023-06-01' },
@@ -67,6 +71,18 @@ export const CLAUDE_CODE_MANIFEST: RunnerPluginManifest = {
         { type: 'file', path: '~/.claude/.credentials.json', jsonPath: 'claudeAiOauth.accessToken', header: 'Authorization', prefix: 'Bearer ' },
       ],
       parser: 'anthropic-models',
+    },
+    // Claude Code writes every model its picker offers into its settings as a
+    // `modelPicker` row — including gateway models, which none of the sources
+    // above can name. Those rows are also the only form `--model` accepts for
+    // them: the gateway's own id (`default`) is refused, the row's value
+    // (`gproxy/default`) runs. So this is the source that makes a gateway model
+    // assignable to a Claude Code task.
+    settingsModels: {
+      path: '~/.claude/settings.json',
+      jsonPath: 'modelPicker.options',
+      idField: 'model',
+      labelField: 'label',
     },
     discoveryCommands: [
       { command: 'claude', args: ['--help'], parser: 'claude-help' },
