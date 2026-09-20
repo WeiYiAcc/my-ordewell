@@ -56,3 +56,29 @@ ln -sfn "$PWD/skills/machine-memory" ~/.ordewell/skills/machine-memory   # globa
 
 Invoke it as `/machine-memory` in the TUI, the conversational CLI, and the VS Code chat.
 It is a no-op for `plan --no-chat`, which does not expand skill tokens.
+
+## Known gap that looks like a bug: a finished runner that never exits
+
+A runner that finishes its work but stays alive at its own prompt keeps the task in
+`in_progress` forever — no marker, no verdict, and every dependent task stays blocked.
+Observed on a multi-task plan: task 1 passed, a later subtask's Claude Code session sat
+idle at its own prompt, and that task never resolved.
+
+Why: silence is deliberately not a verdict.
+
+- `VerdictEngine.ts` — `IDLE_TIMEOUT_MS = 60_000`, documented as "advisory, UI-only".
+  `touchIdle` only stamps `idleSince`; nothing in that file fails a task on silence.
+- `TaskOrchestrator.ts` — `onIdleChange` is wired to `emit('onTaskChanged')` only:
+  "idleSince is advisory UI state, not a store mutation". `getIdleSince` is a getter.
+- So a task resolves in exactly two ways: its completion marker, or its exit code. An
+  interactive runner that never exits after a missed marker hangs instead of failing.
+
+Where a fix belongs (open, and a product decision): the idle transition is already an
+event (`VerdictEngine.onIdleChange` / `IdleListener`), so a configurable grace period
+could fail the task through the same missing-marker path the rest of the engine uses.
+It is not done because a legitimately long-thinking task must not be killed — the window
+is a judgement call. Part of the fix may also belong in the runner shape: an interactive
+runner that has finished its work should arguably exit.
+
+Practical consequence: when a task sits `in_progress` with a live but silent runner pane,
+read the pane before concluding that the model, the runner or the gateway is broken.
